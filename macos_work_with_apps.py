@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 import subprocess
 import sys
 from typing import Any
 
 
 SERVER_NAME = "macos-work-with-apps"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.4.0"
 
 SECRET_PATTERNS = [
     re.compile(r"(sk-[A-Za-z0-9_\-]{20,})"),
@@ -94,21 +93,102 @@ def validate_terminal_command(command: str) -> str:
 
 
 def run_terminal_command(command: str) -> str:
+    """Send command to the front Terminal.app tab using `do script`.
+
+    Uses Terminal.app's native AppleScript dictionary instead of
+    System Events keystrokes, so no Accessibility permission is required.
+    The command appears verbatim in the Terminal window and executes immediately.
+    """
     command = validate_terminal_command(command)
-    quoted = shlex.quote(command)
-    return run_osascript(
-        f"""
-        const app = Application("/System/Applications/Utilities/Terminal.app");
-        app.activate();
-        if (!app.running() || app.windows.length === 0) {{
-          app.doScript({quoted});
-        }} else {{
-          app.doScript({quoted}, {{ in: app.windows[0].selectedTab }});
-        }}
-        "sent";
-        """,
-        language="JavaScript",
-    )
+    # Escape backslashes and double-quotes so the string is safe inside
+    # the AppleScript double-quoted literal we're about to build.
+    escaped = command.replace("\\", "\\\\").replace('"', '\\"')
+    script = f"""
+        tell application "Terminal"
+            if not (exists window 1) then
+                do script "{escaped}"
+            else
+                do script "{escaped}" in (selected tab of front window)
+            end if
+        end tell
+        return "sent"
+    """
+    run_osascript(script)
+    return f"Sent to Terminal: {command}"
+
+
+# ---------------------------------------------------------------------------
+# Special keys that send_terminal_input supports via their AppleScript key code.
+# These bypass the normal keystroke path and send a raw key event.
+# ---------------------------------------------------------------------------
+_SPECIAL_KEYS: dict[str, str] = {
+    "return":    "key code 36",
+    "enter":     "key code 36",
+    "escape":    "key code 53",
+    "esc":       "key code 53",
+    "tab":       "key code 48",
+    "up":        "key code 126",
+    "down":      "key code 125",
+    "left":      "key code 123",
+    "right":     "key code 124",
+    "ctrl+c":    "key code 8 using control down",
+    "ctrl+d":    "key code 2 using control down",
+    "ctrl+z":    "key code 6 using control down",
+    "ctrl+l":    "key code 37 using control down",
+}
+
+
+def send_terminal_input(text: str, press_return: bool = True) -> str:
+    """Send raw stdin input to whatever is currently running in Terminal.app.
+
+    Unlike run_terminal_command (which uses `do script` to start a *new* shell
+    command), this function uses System Events keystroke to type directly into
+    the foreground process.  It works for interactive prompts (Y/n, passwords,
+    pager navigation, vim, fzf, etc.) as well as special control sequences.
+
+    Requires the calling process to have Accessibility permission in
+    System Settings → Privacy & Security → Accessibility.
+
+    Special keys (case-insensitive):
+        return / enter, escape / esc, tab,
+        up, down, left, right,
+        ctrl+c, ctrl+d, ctrl+z, ctrl+l
+    """
+    raw = text.strip()
+    if not raw:
+        raise ValueError("Input text cannot be empty.")
+    if len(raw) > 500:
+        raise ValueError("Input too long; limit is 500 characters.")
+
+    lower = raw.lower()
+    if lower in _SPECIAL_KEYS:
+        # Send a raw key event — no keystroke string needed.
+        key_action = _SPECIAL_KEYS[lower]
+        script = f"""
+            tell application "Terminal" to activate
+            tell application "System Events"
+                {key_action}
+            end tell
+        """
+        run_osascript(script)
+        return f"Sent special key to Terminal: {raw}"
+
+    # Ordinary text: escape backslashes and double-quotes for the AppleScript
+    # string literal, then optionally press Return afterwards.
+    if "\n" in raw or "\r" in raw:
+        raise ValueError("Embedded newlines not allowed; use press_return=true for Enter.")
+    escaped = raw.replace("\\", "\\\\").replace('"', '\\"')
+    return_action = "key code 36" if press_return else ""
+    script = f"""
+        tell application "Terminal" to activate
+        tell application "System Events"
+            keystroke "{escaped}"
+            {return_action}
+        end tell
+    """
+    run_osascript(script)
+    suffix = " + Return" if press_return else ""
+    return f"Sent input to Terminal: {raw}{suffix}"
 
 
 def iterm_context() -> str:
@@ -185,7 +265,13 @@ def tool_list() -> list[dict[str, Any]]:
         },
         {
             "name": "run_terminal_command",
-            "description": "Send a visible single-line command to the front Terminal.app tab.",
+            "description": (
+                "Run a new single-line shell command in the front Terminal.app tab "
+                "using AppleScript `do script`. "
+                "Use this ONLY when the shell prompt is idle (not inside an interactive program). "
+                "To answer an interactive prompt (Y/n, password, vim, pager, etc.) use "
+                "`send_terminal_input` instead."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -195,6 +281,42 @@ def tool_list() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["command"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "send_terminal_input",
+            "description": (
+                "Type text (or a special key) into whatever program is currently running "
+                "in the front Terminal.app tab, via System Events keystroke. "
+                "Use this to answer interactive prompts (Y/n, passwords, confirmations), "
+                "navigate TUI apps (vim :q, pager q, fzf arrow keys), or send control "
+                "sequences (ctrl+c, ctrl+d, ctrl+z). "
+                "Supported special keys: return, escape, tab, up, down, left, right, "
+                "ctrl+c, ctrl+d, ctrl+z, ctrl+l."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "Text to type, or a special key name "
+                            "(return, escape, tab, up, down, left, right, "
+                            "ctrl+c, ctrl+d, ctrl+z, ctrl+l)."
+                        ),
+                    },
+                    "press_return": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": (
+                            "Press Return after typing the text. "
+                            "Set to false for partial input or password fields "
+                            "that confirm with a different key."
+                        ),
+                    },
+                },
+                "required": ["text"],
                 "additionalProperties": False,
             },
         },
@@ -225,8 +347,14 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 
     if name == "run_terminal_command":
         command = arguments.get("command", "")
-        run_terminal_command(command)
-        return {"content": [{"type": "text", "text": f"Sent to Terminal: {command}"}]}
+        result_msg = run_terminal_command(command)
+        return {"content": [{"type": "text", "text": result_msg}]}
+
+    if name == "send_terminal_input":
+        text = arguments.get("text", "")
+        press_return = bool(arguments.get("press_return", True))
+        result_msg = send_terminal_input(text, press_return=press_return)
+        return {"content": [{"type": "text", "text": result_msg}]}
 
     if name != "get_app_context":
         raise ValueError(f"Unknown tool: {name}")
