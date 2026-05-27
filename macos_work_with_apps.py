@@ -16,7 +16,7 @@ from typing import Any
 
 
 SERVER_NAME = "macos-work-with-apps"
-SERVER_VERSION = "0.4.0"
+SERVER_VERSION = "0.4.1"
 
 SECRET_PATTERNS = [
     re.compile(r"(sk-[A-Za-z0-9_\-]{20,})"),
@@ -138,7 +138,11 @@ _SPECIAL_KEYS: dict[str, str] = {
 }
 
 
-def send_terminal_input(text: str, press_return: bool = True) -> str:
+def send_terminal_input(
+    text: str,
+    press_return: bool = True,
+    sensitive: bool = False,
+) -> str:
     """Send raw stdin input to whatever is currently running in Terminal.app.
 
     Unlike run_terminal_command (which uses `do script` to start a *new* shell
@@ -147,14 +151,22 @@ def send_terminal_input(text: str, press_return: bool = True) -> str:
     pager navigation, vim, fzf, etc.) as well as special control sequences.
 
     Requires the calling process to have Accessibility permission in
-    System Settings → Privacy & Security → Accessibility.
+    System Settings -> Privacy & Security -> Accessibility.
+
+    Args:
+        text:         Text to type, or a special key name (see _SPECIAL_KEYS).
+        press_return: Press Return after typing ordinary text (default True).
+        sensitive:    When True the response message redacts the content so
+                      passwords / tokens are not echoed into conversation logs.
 
     Special keys (case-insensitive):
         return / enter, escape / esc, tab,
         up, down, left, right,
         ctrl+c, ctrl+d, ctrl+z, ctrl+l
     """
-    raw = text.strip()
+    # Strip only leading/trailing newlines — preserve intentional spaces so
+    # TUI/REPL inputs like " " (space-bar in pagers) work correctly.
+    raw = text.strip("\n\r")
     if not raw:
         raise ValueError("Input text cannot be empty.")
     if len(raw) > 500:
@@ -188,6 +200,8 @@ def send_terminal_input(text: str, press_return: bool = True) -> str:
     """
     run_osascript(script)
     suffix = " + Return" if press_return else ""
+    if sensitive:
+        return f"Sent sensitive input to Terminal{suffix}"  # content intentionally redacted
     return f"Sent input to Terminal: {raw}{suffix}"
 
 
@@ -315,6 +329,15 @@ def tool_list() -> list[dict[str, Any]]:
                             "that confirm with a different key."
                         ),
                     },
+                    "sensitive": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "When true, the response will NOT echo the typed text back "
+                            "(use for passwords, tokens, or any secret input). "
+                            "The input is still sent to Terminal; only the MCP response is redacted."
+                        ),
+                    },
                 },
                 "required": ["text"],
                 "additionalProperties": False,
@@ -353,7 +376,8 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "send_terminal_input":
         text = arguments.get("text", "")
         press_return = bool(arguments.get("press_return", True))
-        result_msg = send_terminal_input(text, press_return=press_return)
+        sensitive = bool(arguments.get("sensitive", False))
+        result_msg = send_terminal_input(text, press_return=press_return, sensitive=sensitive)
         return {"content": [{"type": "text", "text": result_msg}]}
 
     if name != "get_app_context":
