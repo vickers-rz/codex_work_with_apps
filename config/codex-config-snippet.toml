@@ -1,0 +1,4 @@
+[mcp_servers.macos_work_with_apps]
+command = "python3"
+args = ["/Users/vickers/Documents/MCP_Creator/codex_work_with_apps/macos_work_with_apps.py"]
+startup_timeout_sec = 10
