@@ -13,10 +13,16 @@ common secret patterns by default. It does not bypass macOS permissions. The
 process that launches this server still needs the right macOS Automation and
 Accessibility permissions.
 
+It can also send a visible single-line command to the front Terminal.app tab.
+This write path is intentionally narrow and refuses obvious dangerous commands
+such as `sudo`, recursive force deletion, disk erase commands, and multi-line
+commands.
+
 ## Tools
 
 - `list_supported_apps`: list readable macOS apps.
 - `get_app_context`: read recent context from `terminal` or `iterm2`.
+- `run_terminal_command`: send a visible single-line command to Terminal.app.
 
 ## Test Directly
 
@@ -32,6 +38,7 @@ Then paste one JSON-RPC request per line:
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"manual","version":"0"}}}
 {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_app_context","arguments":{"app":"terminal","max_chars":4000}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run_terminal_command","arguments":{"command":"pwd"}}}
 ```
 
 Press `Ctrl-D` to exit.

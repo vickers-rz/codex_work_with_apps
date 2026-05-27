@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
 from typing import Any
 
 
 SERVER_NAME = "macos-work-with-apps"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 
 SECRET_PATTERNS = [
     re.compile(r"(sk-[A-Za-z0-9_\-]{20,})"),
@@ -24,6 +25,18 @@ SECRET_PATTERNS = [
     re.compile(r"(github_pat_[A-Za-z0-9_]{20,})"),
     re.compile(r"((?:AKIA|ASIA)[A-Z0-9]{16})"),
     re.compile(r"(?i)\b(password|passwd|token|api[_-]?key|secret)\s*=\s*([^\s]+)"),
+]
+
+DANGEROUS_COMMAND_PATTERNS = [
+    re.compile(r"(^|[;&|]\s*)sudo\b"),
+    re.compile(r"\brm\s+.*-[^\n]*r[^\n]*f"),
+    re.compile(r"\brm\s+.*-[^\n]*f[^\n]*r"),
+    re.compile(r"\bchmod\s+.*-R\s+777\b"),
+    re.compile(r"\bchown\s+.*-R\b"),
+    re.compile(r"\bdd\s+.*\bof=/dev/"),
+    re.compile(r"\bmkfs\b"),
+    re.compile(r"\bdiskutil\s+(erase|partition|apfs\s+delete)", re.IGNORECASE),
+    re.compile(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:"),
 ]
 
 
@@ -61,6 +74,38 @@ def terminal_context() -> str:
         const app = Application("/System/Applications/Utilities/Terminal.app");
         if (!app.running() || app.windows.length === 0) "";
         else app.windows[0].selectedTab.history();
+        """,
+        language="JavaScript",
+    )
+
+
+def validate_terminal_command(command: str) -> str:
+    command = command.strip()
+    if not command:
+        raise ValueError("Command cannot be empty.")
+    if "\n" in command or "\r" in command:
+        raise ValueError("Only single-line commands are allowed.")
+    if len(command) > 2000:
+        raise ValueError("Command is too long; limit is 2000 characters.")
+    for pattern in DANGEROUS_COMMAND_PATTERNS:
+        if pattern.search(command):
+            raise ValueError(f"Refusing potentially dangerous command: {command}")
+    return command
+
+
+def run_terminal_command(command: str) -> str:
+    command = validate_terminal_command(command)
+    quoted = shlex.quote(command)
+    return run_osascript(
+        f"""
+        const app = Application("/System/Applications/Utilities/Terminal.app");
+        app.activate();
+        if (!app.running() || app.windows.length === 0) {{
+          app.doScript({quoted});
+        }} else {{
+          app.doScript({quoted}, {{ in: app.windows[0].selectedTab }});
+        }}
+        "sent";
         """,
         language="JavaScript",
     )
@@ -138,6 +183,21 @@ def tool_list() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "run_terminal_command",
+            "description": "Send a visible single-line command to the front Terminal.app tab.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Single-line shell command to run visibly in Terminal.app.",
+                    },
+                },
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        },
     ]
 
 
@@ -162,6 +222,11 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 }
             ]
         }
+
+    if name == "run_terminal_command":
+        command = arguments.get("command", "")
+        run_terminal_command(command)
+        return {"content": [{"type": "text", "text": f"Sent to Terminal: {command}"}]}
 
     if name != "get_app_context":
         raise ValueError(f"Unknown tool: {name}")
