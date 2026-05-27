@@ -34,6 +34,11 @@ interaction models.
 asks Terminal to execute a new shell command. It is appropriate only when the
 front tab is sitting at an idle shell prompt.
 
+If Terminal already has a front window, `run_terminal_command` targets the
+selected tab of that front window. If Terminal has no open window, Terminal may
+create a new window or tab to run the command. Use `get_app_context` first if
+you need to confirm which tab is currently selected.
+
 `send_terminal_input` uses System Events to simulate real keyboard input. That
 input goes through Terminal's normal key handling and into the current pseudo
 terminal. Use it for interactive prompts and terminal UI programs, such as:
@@ -42,6 +47,10 @@ terminal. Use it for interactive prompts and terminal UI programs, such as:
 - entering passwords or tokens with `sensitive=true`
 - sending `ctrl+c`, `ctrl+d`, arrow keys, tab, or escape
 - navigating pagers, vim, fzf, REPLs, and other TUI programs
+
+`send_terminal_input` does not intentionally create a new window or tab. It
+activates Terminal and types into the currently focused Terminal window/tab.
+Make sure the desired Terminal tab is frontmost before using it.
 
 Do not use `run_terminal_command` to answer an interactive prompt. `do script`
 does not mean "write this text to stdin"; it starts a new command in Terminal.
