@@ -19,7 +19,7 @@ from typing import Any, Callable
 # ---------------------------------------------------------------------------
 
 SERVER_NAME = "macos-work-with-apps"
-SERVER_VERSION = "0.4.1"
+SERVER_VERSION = "0.5.0"
 
 # ---------------------------------------------------------------------------
 # Security patterns
@@ -166,40 +166,57 @@ def validate_terminal_command(command: str) -> str:
     return command
 
 
-def run_terminal_command(command: str) -> str:
-    """Send command to the front Terminal.app tab using `do script`.
+def run_terminal_command(command: str, app: str = "terminal") -> str:
+    """Send command to the front terminal tab.
 
-    Uses Terminal.app's native AppleScript dictionary instead of
-    System Events keystrokes, so no Accessibility permission is required.
-    The command appears verbatim in the Terminal window and executes immediately.
+    Supports both Terminal.app (`do script`) and iTerm2 (`write text`).
+    No Accessibility permission is required for either approach.
+    The command appears verbatim in the terminal window and executes immediately.
     """
     command = validate_terminal_command(command)
     escaped = _escape_for_applescript(command)
-    script = f"""
-        tell application "Terminal"
-            if not (exists window 1) then
-                do script "{escaped}"
-            else
-                do script "{escaped}" in (selected tab of front window)
-            end if
-        end tell
-        return "sent"
-    """
+    if app == "iterm2":
+        script = f"""
+            tell application "iTerm2"
+                if not (exists current window) then
+                    create window with default profile command "{escaped}"
+                else
+                    tell current session of current window
+                        write text "{escaped}"
+                    end tell
+                end if
+            end tell
+            return "sent"
+        """
+    else:
+        script = f"""
+            tell application "Terminal"
+                if not (exists window 1) then
+                    do script "{escaped}"
+                else
+                    do script "{escaped}" in (selected tab of front window)
+                end if
+            end tell
+            return "sent"
+        """
+    display = SUPPORTED_APPS.get(app, {}).get("display_name", app)
     run_osascript(script)
-    return f"Sent to Terminal: {command}"
+    return f"Sent to {display}: {command}"
 
 
 def send_terminal_input(
     text: str,
     press_return: bool = True,
     sensitive: bool = False,
+    app: str = "terminal",
 ) -> str:
-    """Send raw stdin input to whatever is currently running in Terminal.app.
+    """Send raw stdin input to whatever is currently running in a terminal app.
 
-    Unlike run_terminal_command (which uses `do script` to start a *new* shell
-    command), this function uses System Events keystroke to type directly into
-    the foreground process.  It works for interactive prompts (Y/n, passwords,
-    pager navigation, vim, fzf, etc.) as well as special control sequences.
+    Unlike run_terminal_command (which uses `do script` / `write text` to start
+    a *new* shell command), this function uses System Events keystroke to type
+    directly into the foreground process.  It works for interactive prompts
+    (Y/n, passwords, pager navigation, vim, fzf, etc.) as well as special
+    control sequences.  Supports both Terminal.app and iTerm2.
 
     Requires the calling process to have Accessibility permission in
     System Settings -> Privacy & Security -> Accessibility.
@@ -209,6 +226,7 @@ def send_terminal_input(
         press_return: Press Return after typing ordinary text (default True).
         sensitive:    When True the response message redacts the content so
                       passwords / tokens are not echoed into conversation logs.
+        app:          Target app key ("terminal" or "iterm2").
 
     Special keys (case-insensitive):
         return / enter, escape / esc, tab,
@@ -223,18 +241,21 @@ def send_terminal_input(
     if len(raw) > 500:
         raise ValueError("Input too long; limit is 500 characters.")
 
+    display = SUPPORTED_APPS.get(app, {}).get("display_name", app)
+    activate_app = "iTerm2" if app == "iterm2" else "Terminal"
+
     lower = raw.lower()
     if lower in _SPECIAL_KEYS:
         # Send a raw key event — no keystroke string needed.
         key_action = _SPECIAL_KEYS[lower]
         script = f"""
-            tell application "Terminal" to activate
+            tell application "{activate_app}" to activate
             tell application "System Events"
                 {key_action}
             end tell
         """
         run_osascript(script)
-        return f"Sent special key to Terminal: {raw}"
+        return f"Sent special key to {display}: {raw}"
 
     # Ordinary text: escape for AppleScript, then optionally press Return.
     if "\n" in raw or "\r" in raw:
@@ -242,7 +263,7 @@ def send_terminal_input(
     escaped = _escape_for_applescript(raw)
     return_action = "key code 36" if press_return else ""
     script = f"""
-        tell application "Terminal" to activate
+        tell application "{activate_app}" to activate
         tell application "System Events"
             keystroke "{escaped}"
             {return_action}
@@ -251,8 +272,8 @@ def send_terminal_input(
     run_osascript(script)
     suffix = " + Return" if press_return else ""
     if sensitive:
-        return f"Sent sensitive input to Terminal{suffix}"  # content intentionally redacted
-    return f"Sent input to Terminal: {raw}{suffix}"
+        return f"Sent sensitive input to {display}{suffix}"  # content intentionally redacted
+    return f"Sent input to {display}: {raw}{suffix}"
 
 
 # ---------------------------------------------------------------------------
@@ -300,8 +321,8 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "run_terminal_command",
         "description": (
-            "Run a new single-line shell command in the front Terminal.app tab "
-            "using AppleScript `do script`. "
+            "Run a new single-line shell command in the front Terminal.app or iTerm2 tab. "
+            "Uses AppleScript `do script` (Terminal) or `write text` (iTerm2). "
             "Use this ONLY when the shell prompt is idle (not inside an interactive program). "
             "To answer an interactive prompt (Y/n, password, vim, pager, etc.) use "
             "`send_terminal_input` instead."
@@ -311,7 +332,13 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Single-line shell command to run visibly in Terminal.app.",
+                    "description": "Single-line shell command to run visibly in the terminal.",
+                },
+                "app": {
+                    "type": "string",
+                    "enum": ["terminal", "iterm2"],
+                    "default": "terminal",
+                    "description": "Target terminal app. Defaults to Terminal.app.",
                 },
             },
             "required": ["command"],
@@ -322,7 +349,7 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "send_terminal_input",
         "description": (
             "Type text (or a special key) into whatever program is currently running "
-            "in the front Terminal.app tab, via System Events keystroke. "
+            "in the front Terminal.app or iTerm2 tab, via System Events keystroke. "
             "Use this to answer interactive prompts (Y/n, passwords, confirmations), "
             "navigate TUI apps (vim :q, pager q, fzf arrow keys), or send control "
             "sequences (ctrl+c, ctrl+d, ctrl+z). "
@@ -355,8 +382,14 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "description": (
                         "When true, the response will NOT echo the typed text back "
                         "(use for passwords, tokens, or any secret input). "
-                        "The input is still sent to Terminal; only the MCP response is redacted."
+                        "The input is still sent to the terminal; only the MCP response is redacted."
                     ),
+                },
+                "app": {
+                    "type": "string",
+                    "enum": ["terminal", "iterm2"],
+                    "default": "terminal",
+                    "description": "Target terminal app. Defaults to Terminal.app.",
                 },
             },
             "required": ["text"],
@@ -389,7 +422,9 @@ def _handle_list_apps(_arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _handle_run_command(arguments: dict[str, Any]) -> dict[str, Any]:
-    return _make_text_content(run_terminal_command(arguments.get("command", "")))
+    return _make_text_content(
+        run_terminal_command(arguments.get("command", ""), app=arguments.get("app", "terminal"))
+    )
 
 
 def _handle_send_input(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -397,6 +432,7 @@ def _handle_send_input(arguments: dict[str, Any]) -> dict[str, Any]:
         arguments.get("text", ""),
         press_return=bool(arguments.get("press_return", True)),
         sensitive=bool(arguments.get("sensitive", False)),
+        app=arguments.get("app", "terminal"),
     )
     return _make_text_content(result_msg)
 
